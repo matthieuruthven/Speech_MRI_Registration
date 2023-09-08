@@ -2,17 +2,19 @@
 # Code to perform data augmentation
 
 # Author: Matthieu Ruthven (matthieuruthven@nhs.net)
-# Last modified: 7th September 2023
+# Last modified: 8th September 2023
 
 # Import required modules
 from numpy import float32, int64, newaxis, float64, zeros_like
 from torch import from_numpy
+from torch.nn.functional import one_hot
 from numpy.random import uniform, randint
 from skimage.transform import rotate, resize
 from math import floor, ceil, sin, radians
 
 
-# Create a transform
+# Code to convert images estimated segmentations and ground-truth 
+# (GT) segmentations from NumPy arrays to PyTorch tensors
 class ToTensor(object):
     
     # To convert NumPy arrays in a sample to PyTorch tensors
@@ -33,7 +35,7 @@ class ToTensor(object):
         return {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
 
 
-# Create a transform
+# Code to rotate, crop and then zero pad images and segmentations
 class RotateCropAndPad(object):
     
     # Rotate, crop and then zero pad the images and segmentations in a sample so that 
@@ -102,7 +104,7 @@ class RotateCropAndPad(object):
                 'fix_gt': rotated_fix_gt}
     
 
-# Create a transform
+# Code to crop images and corresponding GT segmentations
 class RandomCrop(object):
     
     # Random crop with top left corner within x_range and y_range
@@ -150,7 +152,7 @@ class RandomCrop(object):
         return {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
     
 
-# Create a transform
+# Code to rescale images and corresponding GT segmentations
 class Rescale(object):
     
     # Rescale the images and segmentations in a sample to a given size
@@ -193,7 +195,7 @@ class Rescale(object):
         return {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
 
 
-# Create a transform
+# Code to translate images and corresponding GT segmentations
 class RandomTranslation(object):
     
     # Random translation with top left corner within x_range and y_range
@@ -247,7 +249,8 @@ class RandomTranslation(object):
                 'fix_gt': translated_fix_gt}
     
     
-# Create a transform
+# Code to rescale and the zero pad images and 
+# corresponding GT segmentations
 class RescaleAndPad(object):
     
     # Rescale and then zero pad the images and segmentations in a sample so that their 
