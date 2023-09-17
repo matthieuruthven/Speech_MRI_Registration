@@ -3,7 +3,7 @@
 # with a PyTorch backend
 
 # Author: Matthieu Ruthven (matthieuruthven@nhs.net)
-# Last modified: 15th February 2022
+# Last modified: 8th September 2022
 
 # Import required module
 import time
@@ -18,12 +18,148 @@ import numpy as np
 import pandas as pd
 import scipy.io as sio
 import torch
-from torch.utils.data import DataLoader
+from torchvision import transforms
+from torch.utils.data import ConcatDataset, DataLoader
+
+# Import required classes
+from DataAugmentation import ToTensor, RotateCropAndPad, RandomCrop, Rescale, RandomTranslation, RescaleAndPad
+from SpeechMRIDatasets import SpeechMRIData, SpeechMRIDataRandom
 
 # Import VoxelMorph with PyTorch backend
 os.environ['VXM_BACKEND'] = 'pytorch'
 import voxelmorph as vxm
 import voxelmorphwip as vxmwip
+
+
+def create_dataset(data_dir, subj_id_list, augmentation=True, random_choice=True):
+    """Function to create a dataset. 
+
+    Args:
+        - data_dir (Path): path to folder containing all data (i.e. images
+          and ground-truth segmentations)
+        - subj_id_list (list of integers): list of IDs of subjects 
+          whose images should be included in dataset.
+          For example, subj_id_list = [1,2,3,4] would indicate
+          that the images of subjects 1, 2, 3 and 4 should be included
+          in the dataset
+        - augmentation (True or False): indicates if data should be 
+          augmented using rotations, translations, cropping and rescaling
+        - random_choice (True or False): indicates if SpeechMRIData or 
+          SpeechMRIDataRandom should be used as the Dataset class
+        
+    Returns:
+        
+        - PyTorch dataset
+        - loss_weighting (PyTorch tensor): the weighting of each class in 
+          the loss function
+    """
+    
+    # Preallocate list for paths to images and corresponding 
+    # segmentations (ground-truths and estimated) to include in dataset
+    full_img_list = []
+    full_seg_list = []
+    full_gt_list = []
+    full_subj_id_list = []
+
+    # For each subject ID
+    for subj_id in subj_id_list:
+
+        # Create lists of frames in the subfolders
+        img_list = [int(g[6:-4]) for g in os.listdir(data_dir / 'Normalised_Images' / f'Subject{subj_id}') if (g.endswith('.mat') and g.startswith('image'))]
+        img_list.sort()
+        gt_list = [int(g[5:-4]) for g in os.listdir(data_dir / 'GT_Segmentations' / f'Subject{subj_id}') if (g.endswith('.mat') and g.startswith('mask'))]
+        gt_list.sort()
+        seg_list = [int(g[5:-4]) for g in os.listdir(data_dir / 'Est_Segmentations' / f'Subject{subj_id}') if (g.endswith('.mat') and g.startswith('mask'))]
+        seg_list.sort()
+
+        # Print update
+        print(f'Subject {subj_id} has {len(img_list)} images and corresponding segmentations')
+
+        # Create lists of paths to images and segmentations
+        img_list = [data_dir / 'Normalised_Images' / f'Subject{subj_id}' / f'image_{g}.mat' for g in img_list]
+        gt_list = [data_dir / 'GT_Segmentations' / f'Subject{subj_id}' / f'mask_{g}.mat' for g in gt_list]
+        seg_list = [data_dir / 'Est_Segmentations' / f'Subject{subj_id}' / f'mask_{g}.mat' for g in seg_list]
+
+        # Update full_img_list, full_gt_list, full_seg_list and full_subj_id_list
+        full_img_list += img_list
+        full_gt_list += gt_list
+        full_seg_list += seg_list
+        full_subj_id_list += ([subj_id] * len(img_list))
+
+    # Load first image
+    frame = sio.loadmat(full_img_list[0])['image_frame']
+
+    # Image dimensions
+    first_frame_dim = frame.shape
+
+    # Preallocate NumPy arrays for images and segmentations
+    img_array = np.zeros((len(full_img_list), first_frame_dim[0], first_frame_dim[1]))
+    gt_array = np.zeros((len(full_img_list), first_frame_dim[0], first_frame_dim[1]))
+    seg_array = np.zeros((len(full_img_list), first_frame_dim[0], first_frame_dim[1]))
+
+    # Create NumPy array of subject IDs
+    subj_id_array = np.asarray(full_subj_id_list)
+
+    # For each image
+    for idx, file_path in enumerate(full_img_list):
+
+        # Populate img_array
+        img_array[idx, ...] = sio.loadmat(file_path)['image_frame']
+
+    # For each GT segmentation
+    for idx, file_path in enumerate(full_gt_list):
+
+        # Populate gt_array
+        gt_array[idx, ...] = sio.loadmat(file_path)['mask_frame'].astype('int64')
+
+    for idx, file_path in enumerate(full_seg_list):
+
+        # Populate seg_array
+        seg_array[idx, ...] = sio.loadmat(file_path)['mask_frame'].astype('int64')
+
+    # If required, augment the dataset
+    if augmentation:
+
+        # Create dataset with transformation
+        data_transform = transforms.Compose([ToTensor()])
+        dataset_1 = SpeechMRIDataRandom(img_array, seg_array, gt_array, subj_id_array, transform = data_transform)
+
+        # Create dataset with transformation
+        data_transform = transforms.Compose([RotateCropAndPad((-30, 10)), ToTensor()])
+        dataset_2 = SpeechMRIDataRandom(img_array, seg_array, gt_array, subj_id_array, transform = data_transform)
+
+        # Create dataset with transformation
+        data_transform = transforms.Compose([RandomCrop((15, 30), (5, 10), 220), Rescale(256), ToTensor()])
+        dataset_3 = SpeechMRIDataRandom(img_array, seg_array, gt_array, subj_id_array, transform = data_transform)
+
+        # Create dataset with transformation 
+        data_transform = transforms.Compose([RandomTranslation((-30, 30), (0, 30)), ToTensor()])
+        dataset_4 = SpeechMRIDataRandom(img_array, seg_array, gt_array, subj_id_array, transform = data_transform)
+
+        # Create dataset with transformation 
+        data_transform = transforms.Compose([RescaleAndPad((210, 255)), ToTensor()])
+        dataset_5 = SpeechMRIDataRandom(img_array, seg_array, gt_array, subj_id_array, transform = data_transform)
+
+        # Combine datasets
+        dataset = ConcatDataset([dataset_1, dataset_2, dataset_3, dataset_4, dataset_5])
+
+    elif random_choice:
+        
+        # Define transformation
+        data_transform = transforms.Compose([ToTensor()])
+
+        # Create training, validating and testing datasets
+        dataset = SpeechMRIDataRandom(img_array, seg_array, gt_array, subj_id_array, transform = data_transform)
+
+    else:
+
+        # Define transformation
+        data_transform = transforms.Compose([ToTensor()])
+
+        # Create training, validating and testing datasets
+        dataset = SpeechMRIData(img_array, seg_array, gt_array, subj_id_array, transform = data_transform)
+
+    return dataset
 
 # Path to folder containing folders of data files
 dir_path = '/home/mr19/Documents/registration/data/all_frames_7_classes_npz'
@@ -78,437 +214,6 @@ opt_seg_net_paths = '/home/mr19/Documents/registration/voxelmorph/opt_seg_net_pa
 # Load CSV file
 opt_seg_net_paths = pd.read_csv(opt_seg_net_paths)
 
-# Import required modules
-from torch import is_tensor
-from torch.utils.data import Dataset
-from numpy.random import randint
-
-# Create a custom dataset
-class SpeechMRIDataRandom(Dataset):
-    
-    # Dataset of two MR images (moving and fixed image) and the corresponding predicted
-    # and ground-truth segmentations of these images
-    def __init__(self, img_array, seg_array, gt_array, subj_array, transform=None):
-        
-        # Args:
-        # 1) img_array (NumPy array): NumPy array of images.
-        # 2) seg_array (NumPy array): Numpy array of predicted segmentations.
-        # 3) gt_array (Numpy array): Numpy array of ground-truth segmentations.
-        # 4) subj_array (Numpy array): Numpy array of subject codes.
-        # 5) transform (callable, optional): Optional transform to be applied on a sample.
-
-        # Update self
-        self.img_array = img_array
-        self.seg_array = seg_array
-        self.gt_array = gt_array
-        self.subj_array = subj_array
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.subj_array)
-
-    def __getitem__(self, idx):
-        if is_tensor(idx):
-            idx = idx.tolist()
-
-        # Load fixed image and corresponding predicted and ground-truth segmentations
-        fix_img = self.img_array[idx, ...]
-        fix_seg = self.seg_array[idx, ...]
-        fix_gt = self.gt_array[idx, ...]
-
-        # Identify subject
-        subj_code = self.subj_array[idx]
-        
-        # Extract images of subject and corresponding predicted and ground-truth segmentations
-        subj_img = self.img_array[self.subj_array == subj_code, ...]
-        subj_seg = self.seg_array[self.subj_array == subj_code, ...]
-        subj_gt = self.gt_array[self.subj_array == subj_code, ...]
-    
-        # Extract another image of subject and corresponding predicted and ground-truth segmentations at random
-        jdx = randint(subj_img.shape[0])
-        mov_img = subj_img[jdx, ...]
-        mov_seg = subj_seg[jdx, ...]
-        mov_gt = subj_gt[jdx, ...]
-
-        # Define sample
-        sample = {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
-        
-        if self.transform:
-            sample = self.transform(sample)
-
-        return sample
-
-# Create a custom dataset
-class SpeechMRIData(Dataset):
-    
-    # Dataset of two MR images (moving and fixed image), the predicted and ground-truth segmentations
-    # of these images
-    def __init__(self, img_array, seg_array, gt_array, subj_array, transform=None):
-        
-        # Args:
-        # 1) img_array (NumPy array): NumPy array of images.
-        # 2) seg_array (NumPy array): Numpy array of predicted segmentations.
-        # 3) gt_array (Numpy array): Numpy array of ground-truth segmentations.
-        # 4) subj_array (Numpy array): Numpy array of subject codes.
-        # 5) transform (callable, optional): Optional transform to be applied on a sample.
-
-        # Update self
-        self.img_array = img_array
-        self.seg_array = seg_array
-        self.gt_array = gt_array
-        self.subj_array = subj_array
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.subj_array)
-
-    def __getitem__(self, idx):
-        if is_tensor(idx):
-            idx = idx.tolist()
-
-        # Load fixed image and corresponding predicted and ground-truth segmentations
-        fix_img = self.img_array[idx, ...]
-        fix_seg = self.seg_array[idx, ...]
-        fix_gt = self.gt_array[idx, ...]
-
-        # Identify subject
-        subj_code = self.subj_array[idx]
-        
-        # Extract images of subject and corresponding predicted and ground-truth segmentations
-        subj_img = self.img_array[self.subj_array == subj_code, ...]
-        subj_seg = self.seg_array[self.subj_array == subj_code, ...]
-        subj_gt = self.gt_array[self.subj_array == subj_code, ...]
-                
-        # Extract specific image of subject and corresponding predicted segmentations
-        # (specific image depends on subject)
-        if subj_code == 'gc':
-            
-            mov_img = subj_img[1, ...]
-            mov_seg = subj_seg[1, ...]
-            mov_gt = subj_gt[1, ...]
-
-        else:
-
-            mov_img = subj_img[0, ...]
-            mov_seg = subj_seg[0, ...]
-            mov_gt = subj_gt[0, ...]
-
-        # Define sample
-        sample = {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
-        
-        if self.transform:
-            sample = self.transform(sample)
-
-        return sample
-
-# Create a transform
-class RandomCrop(object):
-    
-    # Random crop with top left corner within x_range and y_range
-    # Args:
-    # 1) x_range (tuple) the range of possible x-coordinates for the top left corner of the crop
-    # 2) y_range (tuple) the range of possible y-coordinates for the top left corner of the crop
-    # 3) output_size (int or tuple) the dimensions of the crop. If int, the crop is square
-
-    def __init__(self, x_range, y_range, output_size):
-        self.x_range = x_range
-        self.y_range = y_range
-        assert isinstance(output_size, (int, tuple))
-        if isinstance(output_size, int):
-            self.output_size = (output_size, output_size)
-        else:
-            assert len(output_size) == 2
-            self.output_size = output_size
-
-    def __call__(self, sample):
-        mov_img, mov_seg, mov_gt, fix_img, fix_seg, fix_gt = sample['mov_img'], sample['mov_seg'], sample['mov_gt'], sample['fix_img'], sample['fix_seg'], sample['fix_gt']
-
-        new_h, new_w = self.output_size
-
-        top = randint(self.y_range[0], self.y_range[1])
-        left = randint(self.x_range[0], self.x_range[1])
-
-        mov_img = mov_img[top: top + new_h,
-                      left: left + new_w]
-
-        mov_seg = mov_seg[top: top + new_h,
-                      left: left + new_w]
-
-        mov_gt = mov_gt[top: top + new_h,
-                      left: left + new_w]
-
-        fix_img = fix_img[top: top + new_h,
-                      left: left + new_w]
-
-        fix_seg = fix_seg[top: top + new_h,
-                      left: left + new_w]
-        
-        fix_gt = fix_gt[top: top + new_h,
-                      left: left + new_w]
-
-        return {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
-
-# Import required modules
-from numpy import zeros_like
-
-# Create a transform
-class RandomTranslation(object):
-    
-    # Random translation with top left corner within x_range and y_range
-    # Args:
-    # 1) x_range (tuple) the range of possible x-coordinates for the top left corner of the translated image
-    # 2) y_range (tuple) the range of possible y-coordinates for the top left corner of the translated image
-
-    def __init__(self, x_range, y_range):
-        self.x_range = x_range
-        self.y_range = y_range
-
-    def __call__(self, sample):
-        mov_img, mov_seg, mov_gt, fix_img, fix_seg, fix_gt = sample['mov_img'], sample['mov_seg'], sample['mov_gt'], sample['fix_img'], sample['fix_seg'], sample['fix_gt']
-
-        # Find size of images and segmentations
-        h, w = mov_img.shape
-
-        # Randomly choose translation
-        top = randint(self.y_range[0], self.y_range[1])
-        left = randint(self.x_range[0], self.x_range[1])
-
-        # Define translated images and segmentations
-        translated_mov_img = zeros_like(mov_img)
-        translated_mov_seg = zeros_like(mov_seg)
-        translated_mov_gt = zeros_like(mov_gt)
-        translated_fix_img = zeros_like(fix_img)
-        translated_fix_seg = zeros_like(fix_seg)
-        translated_fix_gt = zeros_like(fix_gt)
-
-        # Populate translated images and segmentations
-        if left > 0:
-            translated_mov_img[top:, left:] = mov_img[:h - top, :w - left]
-            translated_mov_seg[top:, left:] = mov_seg[:h - top, :w - left]
-            translated_mov_gt[top:, left:] = mov_gt[:h - top, :w - left]
-            translated_fix_img[top:, left:] = fix_img[:h - top, :w - left]
-            translated_fix_seg[top:, left:] = fix_seg[:h - top, :w - left]
-            translated_fix_gt[top:, left:] = fix_gt[:h - top, :w - left]
-        else:
-            translated_mov_img[top:, :w + left] = mov_img[:h - top:, -left:]
-            translated_mov_seg[top:, :w + left] = mov_seg[:h - top, -left:]
-            translated_mov_gt[top:, :w + left] = mov_gt[:h - top, -left:]
-            translated_fix_img[top:, :w + left] = fix_img[:h - top:, -left:]
-            translated_fix_seg[top:, :w + left] = fix_seg[:h - top, -left:]
-            translated_fix_gt[top:, :w + left] = fix_gt[:h - top, -left:]
-
-        return {'mov_img': translated_mov_img,
-                'mov_seg': translated_mov_seg,
-                'mov_gt': translated_mov_gt,
-                'fix_img': translated_fix_img,
-                'fix_seg': translated_fix_seg,
-                'fix_gt': translated_fix_gt}
-
-# Import required modules
-from numpy.random import uniform
-from numpy import float64
-from skimage.transform import rotate
-from math import floor, ceil, cos, sin, radians
-
-# Create a transform
-class RotateCropAndPad(object):
-    
-    # Rotate, crop and then zero pad the images and segmentations in a sample so that 
-    # their dimensions do not change
-    # Arg:
-    # 1) rotation_range (tuple) the range of angles in degrees that the image can be rotated by
-
-    def __init__(self, rotation_range):
-        self.rotation_range = rotation_range
-
-    def __call__(self, sample):
-        mov_img, mov_seg, mov_gt, fix_img, fix_seg, fix_gt = sample['mov_img'], sample['mov_seg'], sample['mov_gt'], sample['fix_img'], sample['fix_seg'], sample['fix_gt']
-
-        # Find size of images and segmentations
-        h, w = mov_img.shape
-
-        # Randomly choose rotation
-        rotation_angle = uniform(self.rotation_range[0], self.rotation_range[1])
-
-        # Convert segmentations to correct data type
-        mov_seg = float64(mov_seg)
-        mov_gt = float64(mov_gt)
-        fix_seg = float64(fix_seg)
-        fix_gt = float64(fix_gt)
-
-        # Rotate images and segmentations
-        mov_img = rotate(mov_img, rotation_angle, order = 0) # 0: nearest neighbour
-        mov_seg = rotate(mov_seg, rotation_angle, order = 0) # 0: nearest neighbour
-        mov_gt = rotate(mov_gt, rotation_angle, order = 0) # 0: nearest neighbour
-        fix_img = rotate(fix_img, rotation_angle, order = 0) # 0: nearest neighbour
-        fix_seg = rotate(fix_seg, rotation_angle, order = 0) # 0: nearest neighbour
-        fix_gt = rotate(fix_gt, rotation_angle, order = 0) # 0: nearest neighbour
-
-        # Define rotated, cropped and padded images and segmentations
-        rotated_mov_img = zeros_like(mov_img)
-        rotated_mov_seg = zeros_like(mov_seg)
-        rotated_mov_gt = zeros_like(mov_gt)
-        rotated_fix_img = zeros_like(fix_img)
-        rotated_fix_seg = zeros_like(fix_seg)
-        rotated_fix_gt = zeros_like(fix_gt)
-
-        # Convert rotation_angle to radians
-        rotation_angle = radians(rotation_angle)
-
-        # Crop and pad rotated image frame and mask frame
-        if rotation_angle > 0:
-            rotated_mov_img[ceil(w / 2 * sin(rotation_angle)):, :] = mov_img[:floor(h - w / 2 * sin(rotation_angle)), :]
-            rotated_mov_seg[ceil(w / 2 * sin(rotation_angle)):, :] = mov_seg[:floor(h - w / 2 * sin(rotation_angle)), :]
-            rotated_mov_gt[ceil(w / 2 * sin(rotation_angle)):, :] = mov_gt[:floor(h - w / 2 * sin(rotation_angle)), :]
-            rotated_fix_img[ceil(w / 2 * sin(rotation_angle)):, :] = fix_img[:floor(h - w / 2 * sin(rotation_angle)), :]
-            rotated_fix_seg[ceil(w / 2 * sin(rotation_angle)):, :] = fix_seg[:floor(h - w / 2 * sin(rotation_angle)), :]
-            rotated_fix_gt[ceil(w / 2 * sin(rotation_angle)):, :] = fix_gt[:floor(h - w / 2 * sin(rotation_angle)), :]
-        else:
-            rotated_mov_img[ceil(w / 4 * -sin(rotation_angle)):, :] = mov_img[:floor(h + w / 4 * sin(rotation_angle)), :]
-            rotated_mov_seg[ceil(w / 4 * -sin(rotation_angle)):, :] = mov_seg[:floor(h + w / 4 * sin(rotation_angle)), :]
-            rotated_mov_gt[ceil(w / 4 * -sin(rotation_angle)):, :] = mov_gt[:floor(h + w / 4 * sin(rotation_angle)), :]
-            rotated_fix_img[ceil(w / 4 * -sin(rotation_angle)):, :] = fix_img[:floor(h + w / 4 * sin(rotation_angle)), :]
-            rotated_fix_seg[ceil(w / 4 * -sin(rotation_angle)):, :] = fix_seg[:floor(h + w / 4 * sin(rotation_angle)), :]
-            rotated_fix_gt[ceil(w / 4 * -sin(rotation_angle)):, :] = fix_gt[:floor(h + w / 4 * sin(rotation_angle)), :]
-
-        return {'mov_img': rotated_mov_img,
-                'mov_seg': rotated_mov_seg,
-                'mov_gt': rotated_mov_gt,
-                'fix_img': rotated_fix_img,
-                'fix_seg': rotated_fix_seg,
-                'fix_gt': rotated_fix_gt}
-
-# Import required module
-from skimage.transform import resize
-
-# Create a transform
-class Rescale(object):
-    
-    # Rescale the images and segmentations in a sample to a given size
-    # Arg:
-    # 1) output_size (int or tuple) the desired output size. If int, the size of the smaller edge
-    # is matched to output_size while keeping the aspect ratio the same
-
-    def __init__(self, output_size):
-        assert isinstance(output_size, (int, tuple))
-        self.output_size = output_size
-
-    def __call__(self, sample):
-        mov_img, mov_seg, mov_gt, fix_img, fix_seg, fix_gt = sample['mov_img'], sample['mov_seg'], sample['mov_gt'], sample['fix_img'], sample['fix_seg'], sample['fix_gt']
-
-        # Find size of images and segmentations
-        h, w = mov_img.shape
-        
-        if isinstance(self.output_size, int):
-            if h > w:
-                new_h, new_w = self.output_size * h / w, self.output_size
-            else:
-                new_h, new_w = self.output_size, self.output_size * w / h
-        else:
-            new_h, new_w = self.output_size
-
-        # Convert segmentations to correct data type
-        mov_seg = float64(mov_seg)
-        mov_gt = float64(mov_gt)
-        fix_seg = float64(fix_seg)
-        fix_gt = float64(fix_gt)
-
-        # Resize images and segmentations
-        mov_img = resize(mov_img, (new_h, new_w), order = 0) # 0: nearest neighbour
-        mov_seg = resize(mov_seg, (new_h, new_w), order = 0) # 0: nearest neighbour
-        mov_gt = resize(mov_gt, (new_h, new_w), order = 0) # 0: nearest neighbour
-        fix_img = resize(fix_img, (new_h, new_w), order = 0) # 0: nearest neighbour
-        fix_seg = resize(fix_seg, (new_h, new_w), order = 0) # 0: nearest neighbour
-        fix_gt = resize(fix_gt, (new_h, new_w), order = 0) # 0: nearest neighbour
-
-        return {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
-
-# Create a transform
-class RescaleAndPad(object):
-    
-    # Rescale and then zero pad the images and segmentations in a sample so that their 
-    # dimensions do not change
-    # Arg:
-    # 1) resize_range (tuple) the range of acceptable matrix dimensions following the rescale
-
-    def __init__(self, resize_range):
-        self.resize_range = resize_range
-
-    def __call__(self, sample):
-        mov_img, mov_seg, mov_gt, fix_img, fix_seg, fix_gt = sample['mov_img'], sample['mov_seg'], sample['mov_gt'], sample['fix_img'], sample['fix_seg'], sample['fix_gt']
-
-        # Find size of images and segmentations
-        h, w = mov_img.shape
-
-        # Randomly choose new size of image from within resize_range
-        new_size = randint(self.resize_range[0], self.resize_range[1])
-
-        # Randomly choose lateral translation
-        dx = randint(0, w - new_size)
-
-        # Convert segmentations to correct data type
-        mov_seg = float64(mov_seg)
-        mov_gt = float64(mov_gt)
-        fix_seg = float64(fix_seg)
-        fix_gt = float64(fix_gt)
-
-        # Preallocate arrays for rescaled and zero padded images and segmentations
-        new_mov_img = zeros_like(mov_img)
-        new_mov_seg = zeros_like(mov_seg)
-        new_mov_gt = zeros_like(mov_gt)
-        new_fix_img = zeros_like(fix_img)
-        new_fix_seg = zeros_like(fix_seg)
-        new_fix_gt = zeros_like(fix_gt)
-
-        # Resize images and segmentations
-        mov_img = resize(mov_img, (new_size, new_size), order = 0) # 0: nearest neighbour
-        mov_seg = resize(mov_seg, (new_size, new_size), order = 0) # 0: nearest neighbour
-        mov_gt = resize(mov_gt, (new_size, new_size), order = 0) # 0: nearest neighbour
-        fix_img = resize(fix_img, (new_size, new_size), order = 0) # 0: nearest neighbour
-        fix_seg = resize(fix_seg, (new_size, new_size), order = 0) # 0: nearest neighbour
-        fix_gt = resize(fix_gt, (new_size, new_size), order = 0) # 0: nearest neighbour
-
-        # Zero pad resized images and segmentations
-        new_mov_img[h - new_size:, dx:dx + new_size] = mov_img
-        new_mov_seg[h - new_size:, dx:dx + new_size] = mov_seg
-        new_mov_gt[h - new_size:, dx:dx + new_size] = mov_gt
-        new_fix_img[h - new_size:, dx:dx + new_size] = fix_img
-        new_fix_seg[h - new_size:, dx:dx + new_size] = fix_seg
-        new_fix_gt[h - new_size:, dx:dx + new_size] = fix_gt
-
-        return {'mov_img': new_mov_img,
-                'mov_seg': new_mov_seg,
-                'mov_gt': new_mov_gt,
-                'fix_img': new_fix_img,
-                'fix_seg': new_fix_seg,
-                'fix_gt': new_fix_gt}
-
-# Import required modules
-from numpy import int64, newaxis
-from torch import from_numpy
-from torch.nn.functional import one_hot
-
-# Create a transform
-class ToTensor(object):
-    
-    # To convert numpy arrays in a sample to tensors
-
-    def __call__(self, sample):
-        mov_img, mov_seg, mov_gt, fix_img, fix_seg, fix_gt = sample['mov_img'], sample['mov_seg'], sample['mov_gt'], sample['fix_img'], sample['fix_seg'], sample['fix_gt']
-
-        # Add channel to mov_img and fix_img and convert to correct data type
-        mov_img = from_numpy(mov_img[newaxis, :, :]).float()
-        fix_img = from_numpy(fix_img[newaxis, :, :]).float()
-
-        # One-hot encode mov_seg, mov_gt, fix_seg and fix_gt, and then permute dimensions and convert to 
-        # correct data type
-        mov_seg = one_hot(from_numpy(int64(mov_seg))).permute(2, 0, 1).float()
-        mov_gt = one_hot(from_numpy(int64(mov_gt))).permute(2, 0, 1).float()
-        fix_seg = one_hot(from_numpy(int64(fix_seg))).permute(2, 0, 1).float()
-        fix_gt = one_hot(from_numpy(int64(fix_gt))).permute(2, 0, 1).float()
-
-        return {'mov_img': mov_img, 'mov_seg': mov_seg, 'mov_gt': mov_gt, 'fix_img': fix_img, 'fix_seg': fix_seg, 'fix_gt': fix_gt}
-
 
 # Define multi-class Dice coefficient
 class MCDC:
@@ -521,6 +226,7 @@ class MCDC:
         bottom = torch.clamp((y_true + y_pred).sum(dim = (0, 2, 3)), min = 1e-5)
         dice = torch.mean(top / bottom)
         return dice
+
 
 # Define Dice coefficient
 class EachClassDC:
@@ -536,10 +242,7 @@ class EachClassDC:
         top = 2 * (y_true * y_pred).sum(dim = (1, 2))
         bottom = torch.clamp((y_true + y_pred).sum(dim = (1, 2)), min = 1e-5)
         return top / bottom
-
-# Import required modules
-from torchvision import transforms
-from torch.utils.data import ConcatDataset
+    
 
 # Function to create training datasets
 def train_ds_fn(eval_subj_code, img_array, seg_array, gt_array, subj_array):
