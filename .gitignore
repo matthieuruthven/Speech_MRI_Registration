@@ -1,0 +1,3 @@
+# Ignore following folders and their contents
+.vscode/
+data
