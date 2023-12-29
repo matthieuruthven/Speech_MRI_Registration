@@ -1,15 +1,14 @@
 # SpeechMRIDatasets.py
 # Code to create custom datasets of two-dimensional real-time 
-# speech magnetic resonance (MR) images of the vocal tract during
-# speech, and corresponding ground-truth (GT) segmentations
+# magnetic resonance (MR) images of the vocal tract during
+# speech and corresponding ground-truth (GT) segmentations
 
 # Author: Matthieu Ruthven (matthieuruthven@nhs.net)
-# Last modified: 3rd March 2023
+# Last modified: 29th December 2023
 
 # Import required modules
 from torch import is_tensor
 from torch.utils.data import Dataset
-from scipy.io import loadmat
 from numpy.random import randint
 
 
@@ -22,9 +21,9 @@ class SpeechMRIDataRandom(Dataset):
         
         # Args:
         # 1) img_array (NumPy array): NumPy array of images.
-        # 2) seg_array (NumPy array): Numpy array of predicted segmentations.
-        # 3) gt_array (Numpy array): Numpy array of ground-truth segmentations.
-        # 4) subj_array (Numpy array): Numpy array of subject codes.
+        # 2) seg_array (NumPy array): Numpy array of estimated segmentations.
+        # 3) gt_array (Numpy array): Numpy array of GT segmentations.
+        # 4) subj_array (Numpy array): Numpy array of subject IDs.
         # 5) transform (callable, optional): Optional transform to be applied on a sample.
 
         # Update self
@@ -41,20 +40,20 @@ class SpeechMRIDataRandom(Dataset):
         if is_tensor(idx):
             idx = idx.tolist()
 
-        # Load fixed image and corresponding predicted and ground-truth segmentations
+        # Load fixed image and corresponding estimated and GT segmentations
         fix_img = self.img_array[idx, ...]
         fix_seg = self.seg_array[idx, ...]
         fix_gt = self.gt_array[idx, ...]
 
         # Identify subject
-        subj_code = self.subj_array[idx]
+        subj_id = self.subj_array[idx]
         
-        # Extract images of subject and corresponding predicted and ground-truth segmentations
-        subj_img = self.img_array[self.subj_array == subj_code, ...]
-        subj_seg = self.seg_array[self.subj_array == subj_code, ...]
-        subj_gt = self.gt_array[self.subj_array == subj_code, ...]
+        # Extract images of subject and corresponding estimated and GT segmentations
+        subj_img = self.img_array[self.subj_array == subj_id, ...]
+        subj_seg = self.seg_array[self.subj_array == subj_id, ...]
+        subj_gt = self.gt_array[self.subj_array == subj_id, ...]
     
-        # Extract another image of subject and corresponding predicted and ground-truth segmentations at random
+        # Extract another image of subject and corresponding estimated and GT segmentations at random
         jdx = randint(subj_img.shape[0])
         mov_img = subj_img[jdx, ...]
         mov_seg = subj_seg[jdx, ...]
@@ -78,9 +77,9 @@ class SpeechMRIData(Dataset):
         
         # Args:
         # 1) img_array (NumPy array): NumPy array of images.
-        # 2) seg_array (NumPy array): Numpy array of predicted segmentations.
-        # 3) gt_array (Numpy array): Numpy array of ground-truth segmentations.
-        # 4) subj_array (Numpy array): Numpy array of subject codes.
+        # 2) seg_array (NumPy array): Numpy array of estimated segmentations.
+        # 3) gt_array (Numpy array): Numpy array of GT segmentations.
+        # 4) subj_array (Numpy array): Numpy array of subject IDs.
         # 5) transform (callable, optional): Optional transform to be applied on a sample.
 
         # Update self
@@ -97,22 +96,22 @@ class SpeechMRIData(Dataset):
         if is_tensor(idx):
             idx = idx.tolist()
 
-        # Load fixed image and corresponding predicted and ground-truth segmentations
+        # Load fixed image and corresponding estimated and GT segmentations
         fix_img = self.img_array[idx, ...]
         fix_seg = self.seg_array[idx, ...]
         fix_gt = self.gt_array[idx, ...]
 
         # Identify subject
-        subj_code = self.subj_array[idx]
+        subj_id = self.subj_array[idx]
         
-        # Extract images of subject and corresponding predicted and ground-truth segmentations
-        subj_img = self.img_array[self.subj_array == subj_code, ...]
-        subj_seg = self.seg_array[self.subj_array == subj_code, ...]
-        subj_gt = self.gt_array[self.subj_array == subj_code, ...]
+        # Extract images of subject and corresponding estimated and GT segmentations
+        subj_img = self.img_array[self.subj_array == subj_id, ...]
+        subj_seg = self.seg_array[self.subj_array == subj_id, ...]
+        subj_gt = self.gt_array[self.subj_array == subj_id, ...]
                 
-        # Extract specific image of subject and corresponding predicted segmentations
+        # Extract specific image of subject and corresponding estimated segmentations
         # (specific image depends on subject)
-        if subj_code == 'gc':
+        if subj_id == 4:
             
             mov_img = subj_img[1, ...]
             mov_seg = subj_seg[1, ...]
