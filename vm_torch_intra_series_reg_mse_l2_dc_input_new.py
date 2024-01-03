@@ -3,7 +3,7 @@
 # with a PyTorch backend
 
 # Author: Matthieu Ruthven (matthieuruthven@nhs.net)
-# Last modified: 31st December 2023
+# Last modified: 3rd January 2024
 
 # Import required module
 import argparse
@@ -19,11 +19,53 @@ from torch.utils.data import ConcatDataset, DataLoader
 os.environ['NEURITE_BACKEND'] = 'pytorch'
 os.environ['VXM_BACKEND'] = 'pytorch' # Import VoxelMorph with PyTorch backend
 import voxelmorph as vxm
-# import voxelmorphwip as vxmwip
 import torch.nn.functional as F
-# from monai.metrics import DiceMetric
-# import pandas as pd
+from monai.metrics import DiceMetric
+import pandas as pd
 
+class Grad:
+    """
+    N-D gradient loss. (From VoxelMorph GitHub 3rd Jan 2023)
+    """
+
+    def __init__(self, penalty='l1', loss_mult=None):
+        self.penalty = penalty
+        self.loss_mult = loss_mult
+
+    def _diffs(self, y):
+        vol_shape = [n for n in y.shape][2:]
+        ndims = len(vol_shape)
+
+        df = [None] * ndims
+        for i in range(ndims):
+            d = i + 2
+            # permute dimensions
+            r = [d, *range(0, d), *range(d + 1, ndims + 2)]
+            y = y.permute(r)
+            dfi = y[1:, ...] - y[:-1, ...]
+
+            # permute back
+            # note: this might not be necessary for this loss specifically,
+            # since the results are just summed over anyway.
+            r = [*range(d - 1, d + 1), *reversed(range(1, d - 1)), 0, *range(d + 1, ndims + 2)]
+            df[i] = dfi.permute(r)
+
+        return df
+
+    def loss(self, _, y_pred):
+        if self.penalty == 'l1':
+            dif = [torch.abs(f) for f in self._diffs(y_pred)]
+        else:
+            assert self.penalty == 'l2', 'penalty can only be l1 or l2. Got: %s' % self.penalty
+            dif = [f * f for f in self._diffs(y_pred)]
+
+        df = [torch.mean(torch.flatten(f, start_dim=1), dim=-1) for f in dif]
+        grad = sum(df) / len(df)
+
+        if self.loss_mult is not None:
+            grad *= self.loss_mult
+
+        return grad.mean()
 
 def create_dataset(data_dir, subj_id_list, augmentation=True, random_choice=True):
     """Function to create a dataset. 
@@ -44,8 +86,7 @@ def create_dataset(data_dir, subj_id_list, augmentation=True, random_choice=True
     Returns:
         
         - PyTorch dataset
-        - loss_weighting (PyTorch tensor): the weighting of each class in 
-          the loss function
+        - first_frame_dim (tuple): the dimensions of the images
     """
     
     # Preallocate list for paths to images and corresponding 
@@ -148,7 +189,7 @@ def create_dataset(data_dir, subj_id_list, augmentation=True, random_choice=True
     return dataset, first_frame_dim
 
 
-def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_param):
+def main(data_dir, train_subj, val_subj, epochs, l_rate, lambda_param, gamma_param):
 
     """Function performs the following steps:
        1) Loads images for training (and validation)
@@ -178,7 +219,8 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
         validation_dataloader = DataLoader(validation_dataset, batch_size=len(validation_dataset), shuffle=False, num_workers=4)
 
     # Specify GPU where training will occur
-    device = torch.device("cuda:0")
+    # device = torch.device("cuda:0")
+    device = torch.device("cpu")
 
     # U-Net model architecture
     enc_nf = [16, 32, 32, 32]
@@ -186,7 +228,11 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
     nb_features = [enc_nf, dec_nf]
 
     # Create U-Net model using VxmDense
-    vxm_model = vxmwip.networks.VxmDense(inshape, nb_features, int_steps=0)
+    vxm_model = vxm.networks.VxmDense(inshape,
+                                      nb_unet_features=nb_features,
+                                      int_steps=0,
+                                      src_feats=7,
+                                      trg_feats=7)
 
     # Send model to GPU
     vxm_model.to(device)
@@ -195,7 +241,7 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
     vxm_model.zero_grad() 
 
     # Losses in loss function
-    losses = [vxm.losses.MSE().loss, vxmwip.losses.Grad('l2').loss, vxm.losses.Dice().loss]
+    losses = [vxm.losses.MSE().loss, Grad('l2').loss, vxm.losses.Dice().loss]
 
     # Weighting for each loss
     loss_weights = [1, lambda_param, gamma_param]
@@ -217,7 +263,7 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
     print('Training of segmentation CNN started')
     print(f'Training duration: {epochs} epochs')
     print(f'Learning rate: {l_rate}')
-    print(f'Alpha value: {alpha_param}')
+    print(f'Lambda value: {lambda_param}')
     print(f'Gamma value: {gamma_param}')
 
     # For each epoch
@@ -244,7 +290,7 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
             zero_phi = torch.cat((torch.zeros_like(mov_img), torch.zeros_like(mov_img)), 1).to(device)
 
             # Create required lists
-            input = [torch.cat((mov_img, mov_seg[:, 1:, ...]), 1), torch.cat((fix_img, fix_seg[:, 1:, ...]), 1), mov_gt[:, 1:, ...]]
+            input = [torch.cat((mov_img, mov_seg[:, 1:, ...]), 1), torch.cat((fix_img, fix_seg[:, 1:, ...]), 1)]
             y_true = [torch.cat((fix_img, fix_gt[:, 1:, ...]), 1), zero_phi]
 
             # Zero the optimiser gradients
@@ -301,7 +347,7 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
                     zero_phi = torch.cat((torch.zeros_like(mov_img), torch.zeros_like(mov_img)), 1).to(device)
 
                     # Create required lists
-                    input = [torch.cat((mov_img, mov_seg[:, 1:, ...]), 1), torch.cat((fix_img, fix_seg[:, 1:, ...]), 1), mov_gt[:, 1:, ...]]
+                    input = [torch.cat((mov_img, mov_seg[:, 1:, ...]), 1), torch.cat((fix_img, fix_seg[:, 1:, ...]), 1)]
                     y_true = [torch.cat((fix_img, fix_gt[:, 1:, ...]), 1), zero_phi]
 
                     # Forward propagation
@@ -332,19 +378,8 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
                     # Transform segmentations
                     tra_mov_gt = s_transformer(mov_gt, y_pred[1])
 
-                    # Estimated segmentations
-                    est_segs = torch.argmax(tra_mov_gt, dim = 1)
-
-                    # One-hot encode segmentations
-                    tmp_est_segs = F.one_hot(est_segs, num_classes=n_classes)
-                    labels = F.one_hot(labels, num_classes=n_classes)
-
-                    # Permute dimensions of segmentations
-                    tmp_est_segs = torch.permute(tmp_est_segs, (0, 3, 1, 2))
-                    labels = torch.permute(labels, (0, 3, 1, 2))
-
                     # Calculate the Dice coefficient
-                    dsc = calc_dsc(tmp_est_segs, labels)
+                    dsc = calc_dsc(tra_mov_gt, fix_gt)
 
                     # Update mean_dsc_per_class
                     mean_dsc_per_class[:, epoch - 1] = torch.mean(dsc, dim=0)
@@ -355,12 +390,12 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
     
         # Print epoch and loss information
         if val_subj:
-            print(f'Epoch: {epoch}   Training loss: {tmp_training_loss:.4f}   Validation loss: {validation_loss.item():.4f}   Dice coefficient: {dsc:.4f}')
+            print(f'Epoch: {epoch}   Training loss: {tmp_training_loss:.4f}   Validation loss: {loss.item():.4f}   Dice coefficient: {dsc:.4f}')
         else:
             print(f'Epoch: {epoch}   Training loss: {tmp_training_loss:.4f}')
 
     # Print update
-    print('Finished segmentation CNN training')
+    print('Finished training registration CNN')
 
     # Create string of training dataset subject IDs
     train_subj_string = [str(f) for f in train_subj]
@@ -374,9 +409,9 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
         val_subj_string = "_".join(val_subj_string)
 
         # Path to folder
-        save_dir_path = data_dir / 'RegistrationCNNs' / f'val_subj_{val_subj_string}_train_subj_{train_subj_string}_l_rate_{l_rate}_mb_size_{mb_size}_epochs_{epochs}'    
+        save_dir_path = data_dir / 'RegistrationCNNs' / f'val_subj_{val_subj_string}_train_subj_{train_subj_string}_l_rate_{l_rate}_lambda_{lambda_param}_gamma_{gamma_param}_epochs_{epochs}'    
     else:
-        save_dir_path = data_dir / 'RegistrationCNNs' / f'train_subj_{"_".join(train_subj)}_l_rate_{l_rate}_mb_size_{mb_size}_epochs_{epochs}'
+        save_dir_path = data_dir / 'RegistrationCNNs' / f'train_subj_{"_".join(train_subj)}_l_rate_{l_rate}_lambda_{lambda_param}_gamma_{gamma_param}_epochs_{epochs}'
     
     # If required, create folders
     if os.path.exists(save_dir_path):
@@ -434,7 +469,7 @@ def main(data_dir, train_subj, val_subj, epochs, l_rate, alpha_param, gamma_para
         print(f'Mean Dice coefficients saved here: "{save_dir_path / "mean_dsc.csv"}"')
 
         # Save transformed segmentations
-        savemat(save_dir_path / 'transformed_segmentations.mat', {'tra_segs': np.uint8(torch.permute(est_segs, (1, 2, 0)).cpu().numpy())})
+        savemat(save_dir_path / 'transformed_segmentations.mat', {'tra_segs': np.uint8(torch.permute(torch.argmax(tra_mov_gt, dim=1), (1, 2, 0)).cpu().numpy())})
 
         # Print update
         print(f'Segmentations transformed according to displacement fields estimated by registration CNN saved here: "{save_dir_path / "transformed_segmentations.mat"}"')
@@ -479,13 +514,13 @@ if __name__ == "__main__":
         default=0.0009
         )
     parser.add_argument(
-        '--alpha',
+        '--lambda_param',
         help='Weighting of L2 regularisation term in loss function.',
         type=float,
         default=0.01
         )
     parser.add_argument(
-        '--gamma',
+        '--gamma_param',
         help='Weighting of Dice coefficient term in loss function.',
         type=float,
         default=1.0
@@ -524,4 +559,4 @@ if __name__ == "__main__":
         args.val_subj = [args.val_subj]
 
     # Run main function
-    main(args.data_dir, args.train_subj, args.val_subj, args.epochs, args.l_rate, args.alpha, args.gamma)
+    main(args.data_dir, args.train_subj, args.val_subj, args.epochs, args.l_rate, args.lambda_param, args.gamma_param)
